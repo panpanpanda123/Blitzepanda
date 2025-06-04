@@ -1,0 +1,15 @@
+# 忽略临时文件
+__pycache__/
+*.pyc
+*.log
+*.tmp
+*.xlsx
+*.txt
+
+# 忽略虚拟环境
+.venv/
+env/
+
+# 忽略编辑器项目设置
+.idea/
+.vscode/
