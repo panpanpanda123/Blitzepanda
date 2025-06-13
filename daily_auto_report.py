@@ -5,7 +5,6 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from requests.exceptions import SSLError
-
 from config_and_brand import engine, API_KEY, MODEL, brand_profile
 from AI_prompt import call_kimi_api, safe_dumps
 from summarize import summarize
@@ -15,9 +14,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
-
 # 如果本地没有 ace_tools，就定义一个简单的 fallback
-
 # === 日报输出配置 ===
 THRESHOLD = 30   # 暴涨/暴跌判定阈值 %
 CORE_FIELDS = ["消费金额", "打卡人数", "新增收藏人数", "新好评数", "新中差评数"]
@@ -301,7 +298,6 @@ def plot_comparison_table(brand, report_date):
     print(f"✅ 保存 {brand} 同期对比表：{out_path}")
 
 def main():
-
     # ---------- CLI & 日期计算 ----------
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", help="日报日期，默认昨天 (YYYY-MM-DD)")
@@ -315,7 +311,6 @@ def main():
     if args.date:
         date_str = args.date
     else:
-        # 提示用户确认或输入
         inp = input(f"使用日期 [{default_str}]？回车确认 或 输入其他日期 (YYYY-MM-DD)：").strip()
         date_str = inp if inp else default_str
 
@@ -332,6 +327,8 @@ def main():
     # ---------- 在开始写 TXT/Excel 之前，确保输出目录存在 ----------
     out_dir = Path("./daily_report")
     out_dir.mkdir(exist_ok=True)
+
+    # （下面的那段关于 match = store_map… 就删掉，不要在这里用 brand）
 
     # ---------- 一次性拉取所有数据 ----------
     print("➡️ 拉取昨日运营数据")
@@ -422,6 +419,59 @@ def main():
 
     operator_sections = defaultdict(list)
 
+    # —— 一次性拉当月全量数据 & 衍生列（循环外） ——
+    month_start = report_date.replace(day=1).date()
+    df_month = pd.read_sql(
+        f"""
+        SELECT
+          `美团门店ID`,`日期`,`消费金额`,`曝光人数`,`访问人数`,`购买人数`,
+          `扫码人数`,`新增收藏人数`,`打卡人数`,`新好评数`,`新中差评数`,`点评星级`
+        FROM `operation_data`
+        WHERE `日期` BETWEEN '{month_start}' AND '{report_date.date()}'
+        """, engine
+    ).merge(
+        store_map[['美团门店ID','brand_name','operator','store_id']],
+        on='美团门店ID', how='left'
+    )
+
+    # —— 拉当月每日CPC成本，并按品牌汇总，改列名为“推广通花费” ——
+    cpc_month = pd.read_sql(
+        f"""
+        SELECT 
+          store_id, `date` AS 日期, SUM(cost) AS 推广通花费
+        FROM cpc_hourly_data
+        WHERE `date` BETWEEN '{month_start}' AND '{report_date.date()}'
+        GROUP BY store_id, `date`
+        """, engine
+    ).merge(
+        store_map[['store_id','brand_name','operator']],
+        on='store_id', how='left'
+    )
+    # 同一天同品牌可能存在多门店，按品牌+日期汇总
+    cpc_month = cpc_month.groupby(
+        ['brand_name','operator','日期'], as_index=False
+    )['推广通花费'].sum()
+
+    # 把 推广通花费 合并回 df_month （缺失时设为0），并保留两位小数
+    df_month = df_month.merge(
+        cpc_month[['brand_name','日期','推广通花费']],
+        on=['brand_name','日期'], how='left'
+    ).fillna({'推广通花费': 0})
+    df_month['推广通花费'] = df_month['推广通花费'].round(2)
+
+    # 衍生“星期”、“访问转化”、“购买转化”
+    weekday_map = {0:'星期一',1:'星期二',2:'星期三',3:'星期四',4:'星期五',5:'星期六',6:'星期日'}
+    df_month['星期'] = pd.to_datetime(df_month['日期']).dt.weekday.map(weekday_map)
+    df_month['访问转化'] = (df_month['访问人数']/df_month['曝光人数']).round(3)
+    df_month['购买转化'] = (df_month['购买人数']/df_month['访问人数']).round(3)
+
+    # 在 cols 中插入“推广通花费”
+    cols = [
+        '日期','星期','消费金额','推广通花费','曝光人数','访问人数','购买人数',
+        '访问转化','购买转化','新增收藏人数','打卡人数',
+        '新好评数','新中差评数','扫码人数','点评星级'
+    ]
+
     # ---------- 构造每家门店的 Section ----------
     sections = []
     for brand, df_op in op_group:
@@ -443,32 +493,54 @@ def main():
             cpc_sum = summarize(df_cpc, cpc_fields)
             ratios  = compute_cpc_contribution_ratios(op_sum, cpc_sum)
 
-        # 2) 计算日环比（昨日 vs. 上周同期）
+        # —— 新增：当日 & 昨日 推广通花费 ——
+        cpc_cost = float(cpc_sum.get("cost", 0))
+        cost_today = round(cpc_cost, 2)
+        prev_date = report_date.date() - timedelta(days=1)
+        # 从 cpc_month DataFrame 找昨日成本
+        prev_row = cpc_month[
+            (cpc_month['brand_name']==brand) & (cpc_month['日期']==prev_date)
+        ]
+        cost_prev = float(prev_row['推广通花费'].iloc[0]) if len(prev_row) else 0.0
+
+        # 2) 计算日环比（昨日 vs. 上周同期），周一特殊处理
         weekday = report_date.weekday()
         if weekday == 0:
+            # 周一：把 curr 定义为上周五~周日，prev 定义为上上周五~周上周日
             curr = df_hist_b[
                 (df_hist_b["日期"] >= (report_date - timedelta(days=3)).date()) &
                 (df_hist_b["日期"] <= (report_date - timedelta(days=1)).date())
-            ]
+                ]
             prev = df_hist_b[
                 (df_hist_b["日期"] >= (report_date - timedelta(days=10)).date()) &
                 (df_hist_b["日期"] <= (report_date - timedelta(days=8)).date())
-            ]
+                ]
+
+            # 使用三个工作日的汇总来作为“本期”
+            curr_sum = summarize(curr, op_fields)
         else:
+            # 非周一：本期就是昨天，prev 是上周同一天
             curr = df_hist_b[df_hist_b["日期"] == (report_date - timedelta(days=1)).date()]
             prev = df_hist_b[df_hist_b["日期"] == (report_date - timedelta(days=8)).date()]
 
-        curr_sum = summarize(curr, op_fields)
+            # 本期用昨天那一天的 op_sum（已经提前算好）
+            curr_sum = op_sum
+
         prev_sum = summarize(prev, op_fields)
+
+        # 组装环比数字
         link_ratio = {}
         for k in op_fields:
-            if prev_sum.get(k,0):
-                ratio = round(
-                    (curr_sum.get(k,0) - prev_sum.get(k,0))
-                    / (prev_sum.get(k,0) or 1)
-                    * 100, 1
-                )
-                link_ratio[k] = f"{ratio}%"
+            if prev_sum.get(k, 0):
+                if weekday == 0:
+                    # 周一：用3天汇总
+                    val_curr = curr_sum.get(k, 0)
+                else:
+                    # 平日：用昨天的汇总(op_sum)
+                    val_curr = curr_sum.get(k, 0)
+                val_prev = prev_sum.get(k, 0)
+                pct = round((val_curr - val_prev) / (val_prev or 1) * 100, 1)
+                link_ratio[k] = f"{pct}%"
             else:
                 link_ratio[k] = "N/A"
 
@@ -590,14 +662,26 @@ def main():
         bad_val = int(op_sum.get("新中差评数", 0))
         bad_str = fmt(bad_val, link_ratio.get("新中差评数", "N/A"))
 
-        # 定义TEXT
+        # —— 决定是否显示推广通花费 & 是否预警 ——
+        cpc_part = ""
+        if not (cost_today == 0 and cost_prev == 0):
+            cpc_part = f"；推广通花费 {cost_today:.2f}"
+            # 判断“①昨日>0 今儿=0 或 ② |今-昨|/昨 ≥50% 且 |今-昨| ≥100”
+            if (cost_prev > 0 and cost_today == 0) or (
+                cost_prev > 0 and abs(cost_today - cost_prev)/cost_prev >= 0.5
+                and abs(cost_today - cost_prev) >= 100
+            ):
+                cpc_part += " ⚠️ 推广通花费异常"
+
+        # 构建 TEXT
         text = (
             f"{brand}\n"
-            f"- 核心指标：消费 {rev_str}；打卡 {card_str}；收藏 {col_str}；\n"
+            f"- 核心指标：消费 {rev_str}{cpc_part}；打卡 {card_str}；收藏 {col_str}；\n"
             f"  好评 {good_str}；{'' if bad_val == 0 else '差评 ' + bad_str}\n"
             f"- 排行榜：\n{rank_note}\n"
             f"- 建议：{suggestion}\n"
         )
+
 
         # 保存到单店 txt（文件名：品牌_日期.txt）
         #out_dir = Path("./daily_report")
@@ -607,8 +691,17 @@ def main():
         #print(f"📄 已生成：{fn}")
 
         # 按 operator 收集
-        op = store_map.loc[store_map['brand_name'] == brand, 'operator'].iat[0]
-        operator_sections[op].append(text)
+        match = store_map[store_map['brand_name'] == brand]
+        if match.empty:
+            print(f"❗ 品牌 {brand} 未在 store_map 中匹配到，跳过")
+            continue
+        op_val = match['operator'].values[0]
+        if pd.isna(op_val) or not op_val:
+            print(f"❗ 品牌 {brand} 找到了但运营师字段为空，跳过")
+            continue
+
+        print(f"✅ 品牌 {brand} 匹配运营师：{op_val}")
+        operator_sections[op_val].append(text)
 
         sections.append(
             f"{brand}\n"
@@ -619,33 +712,14 @@ def main():
         )
 
     # —— 循环外，写各运营师的 TXT ——
+    print("🧪 operator_sections 内容 keys：", list(operator_sections.keys()))
+    for op, texts in operator_sections.items():
+        print(f"🧪 运营师 {op} 的门店数：{len(texts)}")
+
     for op, texts in operator_sections.items():
         fn = out_dir / f"{op}_{report_date.date()}.txt"
         fn.write_text("\n\n".join(texts), encoding="utf-8-sig")
         print(f"📄 已生成运营师日报：{fn}")
-
-    # —— 一次性拉当月全量数据 & 衍生列（循环外） ——
-    month_start = report_date.replace(day=1).date()
-    df_month = pd.read_sql(
-        f"""
-        SELECT
-          `美团门店ID`,`日期`,`消费金额`,`曝光人数`,`访问人数`,`购买人数`,
-          `扫码人数`,`新增收藏人数`,`打卡人数`,`新好评数`,`新中差评数`,`点评星级`
-        FROM `operation_data`
-        WHERE `日期` BETWEEN '{month_start}' AND '{report_date.date()}'
-        """, engine
-    ).merge(
-        store_map[['美团门店ID','brand_name','operator']],
-        on='美团门店ID', how='left'
-    )
-    # 衍生“星期”、“访问转化”、“购买转化”
-    weekday_map = {0:'星期一',1:'星期二',2:'星期三',3:'星期四',4:'星期五',5:'星期六',6:'星期日'}
-    df_month['星期'] = pd.to_datetime(df_month['日期']).dt.weekday.map(weekday_map)
-    df_month['访问转化'] = (df_month['访问人数']/df_month['曝光人数']).round(3)
-    df_month['购买转化'] = (df_month['购买人数']/df_month['访问人数']).round(3)
-    cols = ['日期','星期','消费金额','曝光人数','访问人数','购买人数',
-            '访问转化','购买转化','新增收藏人数','打卡人数',
-            '新好评数','新中差评数','扫码人数','点评星级']
 
     # —— 按运营师输出月度 Excel（每店一个 sheet） ——
     for op, grp_op in df_month.groupby('operator'):
@@ -717,26 +791,24 @@ def main():
                 )
 
             # ——— 单元格格式化 ———
-            money_fmt = '#,##0'
-            pct_fmt = '0.0%'
-            star_fmt = '0.0'
-            # “点评星级”在最后一列，这里用 max_column 保证定位
+            fmt_amt2 = '#,##0.00'  # 两位小数
+            fmt_int = '#,##0'  # 整数
+            pct_fmt = '0.0%'  # 百分比
+            star_fmt = '0.0'  # 星级一位小数
             for row in range(4, ws.max_row + 1):
-                ws.cell(row, 3).number_format = money_fmt  # C 列：消费金额
-                ws.cell(row, 7).number_format = pct_fmt  # G 列：访问转化
-                ws.cell(row, 8).number_format = pct_fmt  # H 列：购买转化
-                ws.cell(row, ws.max_column).number_format = star_fmt  # N 列：星级
-
-            # ——— 单元格格式化 ———
-            money_fmt = '#,##0'
-            pct_fmt = '0.0%'
-            star_fmt = '0.0'
-            # 假设列序：C=消费金额, G=访问转化, H=购买转化, N=点评星级
-            ws.column_dimensions['C'].width += 2
-            for row in range(4, ws.max_row + 1):
-                ws.cell(row, 3).number_format = money_fmt
-                ws.cell(row, 7).number_format = pct_fmt
+                # C 列：消费金额 保留两位小数
+                ws.cell(row, 3).number_format = fmt_amt2
+                # D 列：推广通花费 保留两位小数
+                ws.cell(row, 4).number_format = fmt_amt2
+                # E~G 列：曝光/访问/购买 用整数
+                ws.cell(row, 5).number_format = fmt_int
+                ws.cell(row, 6).number_format = fmt_int
+                ws.cell(row, 7).number_format = fmt_int
+                # H 列：访问转化 百分比
                 ws.cell(row, 8).number_format = pct_fmt
+                # I 列：购买转化 百分比
+                ws.cell(row, 9).number_format = pct_fmt
+                # 最后一列（点评星级） 用一位小数
                 ws.cell(row, ws.max_column).number_format = star_fmt
 
         wb.save(file)
