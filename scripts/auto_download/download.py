@@ -3,13 +3,20 @@ import time
 from pathlib import Path
 from datetime import date, timedelta
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from cpc_utils import download_cpc
+from cpc_utils import download_cpc, pause_listener, wait_if_paused
 from profile_brand_map import PROFILE_BRAND_MAP
 from bizguide_utils import (
     select_date_range, select_basic_filters,
     expand_more_metrics, select_all_metrics,
-    download_with_generation, cleanup_page, try_close_popup
+    download_with_generation, cleanup_page, try_close_popup, click_reset_if_exists
 )
+import threading
+
+
+# 全局控制变量
+PAUSED = False
+
+threading.Thread(target=pause_listener, daemon=True).start()
 
 # —— 配置 ——
 SRC         = Path(r"C:\Users\豆豆\AppData\Local\Google\Chrome\User Data")
@@ -51,10 +58,20 @@ def clone_user_data():
 
 def get_download_period():
     today = date.today()
-    start = today - timedelta(days=3) if today.weekday()==0 else today - timedelta(days=1)
-    default = f"{start.isoformat()},{start.isoformat()}"
+
+    if today.weekday() == 0:  # 周一
+        # 上周五 ~ 周日
+        start = today - timedelta(days=3)  # 上周五
+        end = today - timedelta(days=1)  # 周日
+    else:
+        # 默认昨天
+        start = today - timedelta(days=1)
+        end = start
+
+    default = f"{start.isoformat()},{end.isoformat()}"
     text = input(f"下载日期范围（YYYY-MM-DD,YYYY-MM-DD），回车使用默认[{default}]: ").strip()
-    return tuple(map(str.strip, text.split(","))) if text else (start.isoformat(), start.isoformat())
+    return tuple(map(str.strip, text.split(","))) if text else (start.isoformat(), end.isoformat())
+
 
 def run_profile(ctx, profile: str, start_date: str, end_date: str):
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -73,6 +90,7 @@ def run_profile(ctx, profile: str, start_date: str, end_date: str):
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         # —— 0. 快速检测“登录弹窗” ——
+        wait_if_paused()
         popup = False
         try:
             # 只等 500 ms：要么立刻发现 iframe.loginFormContent，要么直接走主流程
@@ -83,20 +101,24 @@ def run_profile(ctx, profile: str, start_date: str, end_date: str):
 
         if popup:
             # —— 1. 处理登录/业务选择弹窗 ——
+            wait_if_paused()
             login_frame = page.frame_locator("iframe.loginFormContent")
             login_frame.locator('div.biz-item:has-text("我是餐饮商家")').click()
             login_frame.locator('button.button.active:has-text("确定")').click()
             page.wait_for_load_state("networkidle", timeout=5000)
             print("✅ 已关闭弹窗，继续下载 CPC")
         # —— 2. 再走 download_cpc ——
+        wait_if_paused()
         download_cpc(page, CPC_DIR, start_date, end_date, profile)
     else:
         print(f"ℹ️ {cfg.get('brand', profile)} 未投放推广通，跳过推广通页面与 CPC 下载")
     # —— 2. 运营数据（仅当 op=True 时执行）——
+    wait_if_paused()
     if cfg.get('op', True):
         page.goto(EXPORT_URL, wait_until="networkidle")
         frame = page.frame_locator("iframe").first
         try_close_popup(frame)
+        click_reset_if_exists(frame)
         select_date_range(frame, start_date, end_date)
         select_basic_filters(frame)
         expand_more_metrics(frame)

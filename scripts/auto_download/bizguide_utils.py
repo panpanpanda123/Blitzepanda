@@ -4,6 +4,20 @@ from datetime import datetime
 from pathlib import Path
 from playwright.sync_api import Locator, Page, TimeoutError
 
+def force_select_all_checkboxes(frame: Locator) -> None:
+    """
+    使用 JS 脚本遍历页面上所有未勾选的复选框并点击，强制全选。
+    """
+    frame.evaluate(
+        """() => {
+            document
+              .querySelectorAll('input[type="checkbox"]')
+              .forEach(cb => { if (!cb.checked) cb.click(); });
+        }"""
+    )
+    print("✅ JS 强制勾选所有复选框完成")
+
+
 def try_close_popup(frame: Locator) -> None:
     """
     尝试关闭可能弹出的活动推荐类弹窗
@@ -18,21 +32,73 @@ def try_close_popup(frame: Locator) -> None:
     except Exception as e:
         print(f"⚠️ 关闭弹窗失败，异常信息：{e}")
 
-def select_date_range(frame: Locator, start_date_str: str, end_date_str: str) -> None:
+def click_reset_if_exists(frame: Locator) -> None:
     """
-    Selects the date range via textbox and day buttons.
+    若页面出现“点击重置”按钮，则点击一次以清空上次保存的维度设置。
     """
-    # 解析日数，去掉前导0
-    start_day = str(int(start_date_str.split("-")[-1]))
-    end_day   = str(int(end_date_str.split("-")[-1]))
+    try:
+        reset_btns = frame.get_by_text("点击重置", exact=True)
+        if reset_btns.count() > 0:
+            reset_btns.first.click()
+            print("🔄 已点击“点击重置”，重置维度成功")
+            time.sleep(0.5)           # 给页面一点反应时间
+    except Exception as e:
+        # 非关键流程，异常时仅提示
+        print(f"⚠️ 点击“点击重置”失败：{e}")
 
-    # 点击日期输入框
+def select_date_range(frame: Locator, start_date: str, end_date: str) -> None:
+    """
+    在报表页里，打开日期选择器后，
+    通过年月匹配左右两侧日历面板，再分别点击开始/结束日，最后点 确定。
+    """
+    # 拆年月日 & 月份格式化为两位数 (“06月”)
+    s_y, s_m, s_d = start_date.split("-")
+    e_y, e_m, e_d = end_date.split("-")
+    s_label_m = f"{int(s_m):02d}月"
+    e_label_m = f"{int(e_m):02d}月"
+    s_label_d, e_label_d = str(int(s_d)), str(int(e_d))
+
+    # 打开选择器
     frame.get_by_role("textbox", name="开始日期 至 结束日期").click()
-    # 选择开始日和结束日
-    frame.get_by_role("button", name=start_day, exact=True).first.click()
-    frame.get_by_role("button", name=end_day, exact=True).first.click()
+    time.sleep(0.1)
 
-    print(f"✅ 已选择日期范围 {start_date_str} 至 {end_date_str}")
+    # Helper：在所有 calendar-content 里，找出匹配年月的那个面板
+    def find_panel(year: str, month_label: str):
+        panels = frame.locator(".mtd-date-calendar-content.active")
+        for i in range(panels.count()):
+            panel = panels.nth(i)
+            yr = panel.locator(".mtd-date-calendar-year-btn").inner_text().strip()
+            mo = panel.locator(".mtd-date-calendar-month-btn").inner_text().strip()
+            if yr == f"{year}年" and mo == month_label:
+                return panel
+        raise RuntimeError(f"未找到 {year}年 {month_label} 的日历面板")
+
+    # 1. 选开始日
+    start_panel = find_panel(s_y, s_label_m)
+    start_panel \
+        .locator("div.mtd-date-panel-data-wrapper:not(.not-current-month)") \
+        .get_by_role("button", name=s_label_d, exact=True) \
+        .click()
+    # 2. 选结束日
+    # 如果跨月，先翻月再找；同月直接在同一个面板里找第二个
+
+    if (s_y, s_m) != (e_y, e_m):
+          # 跨月：翻到结束月，再在当前月面板里点
+        frame.locator(".mtd-date-calendar-month-switcher.right-switcher").first.click()
+        time.sleep(0.1)
+        end_panel = find_panel(e_y, e_label_m)
+        end_panel\
+            .locator("div.mtd-date-panel-data-wrapper:not(.not-current-month)") \
+            .get_by_role("button", name=e_label_d, exact=True) \
+            .click()
+    else:
+      # 同月：同样只在当前月面板里选第二个（此时只有一个匹配）
+        start_panel \
+            .locator("div.mtd-date-panel-data-wrapper:not(.not-current-month)") \
+            .get_by_role("button", name=e_label_d, exact=True) \
+            .click()
+
+    print(f"✅ 已选择日期：{start_date} 至 {end_date}")
 
 
 def select_basic_filters(frame: Locator) -> None:
@@ -129,25 +195,21 @@ def download_generated_report(
     """
     Download the first generated report matching date_str and save.
     """
-    # 捕获 popup 和 download
-    with page.expect_download() as dl_info:
-        with page.expect_popup() as popup_info:
-            # 匹配行
-            rows = frame.get_by_role("row")
-            for i in range(rows.count()):
-                row = rows.nth(i)
-                name = row.get_attribute("name") or ""
-                if name.startswith(date_str):
-                    row.locator("span").nth(3).click()
-                    break
-        popup = popup_info.value
+    first_row = frame.locator("tr.mtd-table-row").first
+    with page.expect_download(timeout=15_000) as dl_info:
+        try:
+            with page.expect_popup(timeout=3_000) as pop_info:
+                first_row.locator("span.report-list-module_btn_lyByD").click()
+            pop = pop_info.value
+        except TimeoutError:
+            pop = None
+
     download = dl_info.value
     filename = f"{profile}_{date_str}.xlsx"
-    target = download_dir / filename
-    download.save_as(str(target))
+    download.save_as(str(download_dir / filename))
     print(f"✅ 下载完成：{filename}")
-    popup.close()
-
+    if pop:
+        pop.close()
 
 def cleanup_page(page: Page) -> None:
     """
@@ -187,38 +249,25 @@ def download_with_generation(
     else:
         raise RuntimeError("❌ 等待超时，页面仍存在 “--”，文件可能尚未生成")
 
-    # 3. 构造匹配行的正则
-    pat = re.compile(start_date.replace("-", "") + ".*" + end_date.replace("-", ""))
-    row = None
+    # 3-5. 查找最新记录并下载
+    first_row = frame.locator("tr.mtd-table-row").first  # ① 永远拿第一行
+    download_btn = first_row.locator("span.report-list-module_btn_lyByD") \
+        .filter(has_text="下载").first  # ② 下载按钮
 
-    # 4. 轮询尝试 5 次查找目标文件
-    for attempt in range(5):
+    with page.expect_download(timeout=15_000) as dl_info:  # ③ 先监听 download
+        # popup 秒关不稳定 → 尝试捕获，但失败也无妨
         try:
-            rows = frame.get_by_role("row", name=pat)
-            rows.get_by_text("下载", exact=True).first.wait_for(timeout=3000)
-            row = rows.first
-            print(f"✅ 第 {attempt+1} 次：记录已生成，准备下载...")
-            break
+            with page.expect_popup(timeout=3_000) as pop_info:
+                download_btn.click()
+            popup_page = pop_info.value
         except TimeoutError:
-            print(f"⏳ 第 {attempt+1} 次：未找到目标记录或下载按钮，3 秒后重试")
-            time.sleep(3)
-            page.reload()
-            frame = page.frame_locator("iframe").first
-
-    if not row:
-        raise RuntimeError("❌ 运营数据生成失败，未找到匹配的记录")
-
-    # 5. 点击下载并保存文件
-    with page.expect_download() as dl_info:
-        with page.expect_popup() as popup_info:
-            row.get_by_text("下载", exact=True).first.click()
-        download_page = popup_info.value
+            popup_page = None
 
     download = dl_info.value
-    filename = f"{profile}_{start_date.replace('-','')}_{end_date.replace('-','')}.xlsx"
-    target = download_dir / filename
-    download.save_as(str(target))
-    print(f"✅ 运营数据下载完成：{target.name}")
+    filename = f"{profile}_{start_date.replace('-', '')}_{end_date.replace('-', '')}.xlsx"
+    download.save_as(str(download_dir / filename))
+    print(f"✅ 运营数据下载完成：{filename}")
 
-    # 6. 清理页面
-    download_page.close()
+    # 6. 关闭秒关的弹出页签，防止残留
+    if popup_page:
+        popup_page.close()

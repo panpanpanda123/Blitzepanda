@@ -1,10 +1,22 @@
 import re
 import time
-import os
 from pathlib import Path
 from playwright.sync_api import Page, TimeoutError
 from profile_brand_map import PROFILE_BRAND_MAP
+import keyboard
 
+PAUSED = False
+
+def pause_listener():
+    global PAUSED
+    while True:
+        keyboard.wait("F9")  # 按一次 F9 就切换一次状态
+        PAUSED = not PAUSED
+        print("⏸️ 暂停中..." if PAUSED else "▶️ 继续执行")
+
+def wait_if_paused():
+    while PAUSED:
+        time.sleep(0.1)
 
 def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str, profile: str) -> None:
     """
@@ -19,8 +31,9 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
         # 注意：一定要在 iframe 里找
         btn = ad_iframe.get_by_text(btn_text, exact=True)
         # 先滚动到可见，再等待可见
-        btn.scroll_into_view_if_needed(timeout=15000)
-        btn.wait_for(state="visible", timeout=15000)
+        btn.scroll_into_view_if_needed(timeout=5000)
+        btn.wait_for(state="visible", timeout=5000)
+        wait_if_paused()
         try:
             btn.click(force=True)
             print(f"✅ 点击 {btn_text} 成功")
@@ -39,6 +52,7 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
     cpc_frame = ad_iframe.frame_locator("iframe[title^='https://midas.dianping.com/shopdiy/account/pcCpcEntry']")
 
     # 3. 点击“数据报告”→“推广分析”
+    wait_if_paused()
     cpc_frame.get_by_text("数据报告", exact=True).click()
     time.sleep(1)
     cpc_frame.get_by_text("推广分析", exact=True).click()
@@ -46,6 +60,7 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
 
     # 4. 切换频道：先点“美团+点评”，再选“点评”
     print("🔄 切换到点评频道…")
+    wait_if_paused()
     # 录制中是在最内层 iframe 里用 div.filter
     cpc_frame.locator("div").filter(
         has_text=re.compile(r"^美团\+点评$")).click()  # :contentReference[oaicite:0]{index=0}
@@ -56,6 +71,7 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
 
     # —— 5. 选择自定义日期并点击具体日期 ——
     print(f"📅 选择自定义日期：{start_date} ~ {end_date}")
+    wait_if_paused()
     # 打开下拉，只点第一个“开始日期”输入框
     date_container = cpc_frame.locator("div").filter(has_text=re.compile(r"自定义"))
     date_input = date_container.get_by_placeholder("开始日期").first
@@ -71,6 +87,7 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
 
     # 封装一个通用的点击尝试函数
     def try_click(el):
+        wait_if_paused()
         try:
             el.click()
             return True
@@ -83,6 +100,7 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
 
     # —— 点击开始日 ——
     print(f"🔍 尝试点击开始日：{sd}")
+    wait_if_paused()
     clicked = False
 
     # 方法1：div.date-date 文本匹配
@@ -155,11 +173,13 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
 
     # —— 6.5 点击“按时间拆分” ——
     print("🔀 应用「按时间拆分」…")
+    wait_if_paused()
     cpc_frame.get_by_text("按时间拆分", exact=True).first.click()
     time.sleep(0.5)
 
     # 7. 点击“下载明细”
     print("📥 正在生成点评CPC报表...")
+    wait_if_paused()
     try:
         cpc_frame.get_by_role("button", name=re.compile("下载明细")).first.click()
     except:
@@ -172,6 +192,7 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
 
     # 8. 切换美团平台
     print("🔄 切换到美团…")
+    wait_if_paused()
     # 录制中是在最内层 iframe 里用 div.filter
     page.keyboard.press("PageUp")  # 连续往上滚一滚
     time.sleep(0.2)
@@ -187,6 +208,7 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
 
     # 9. 再次点击“下载明细”
     print("📥 正在生成美团CPC报表...")
+    wait_if_paused()
     try:
         cpc_frame.get_by_role("button", name=re.compile("下载明细")).first.click()
     except:
@@ -198,6 +220,7 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
         pass
 
     # —— 点击“下载记录”，取最近两条 ——
+    wait_if_paused()
     cpc_frame.get_by_role("button", name=re.compile("下载记录")).nth(0).click()
     time.sleep(1)
 
