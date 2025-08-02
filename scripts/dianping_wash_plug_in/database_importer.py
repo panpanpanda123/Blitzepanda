@@ -6,14 +6,18 @@ from sqlalchemy import JSON, Integer
 # ✅ 通用函数（传入 if_exists 控制 replace/append）
 def import_to_mysql(df, table_name, db_connection_string, dtype=None, if_exists='append'):
     engine = create_engine(db_connection_string)
-    df.to_sql(
-        name=table_name,
-        con=engine,
-        if_exists=if_exists,
-        index=False,
-        dtype=dtype
-    )
-    print(f"✅ 数据成功导入表：{table_name}，模式：{if_exists}")
+    try:
+        df.to_sql(
+            name=table_name,
+            con=engine,
+            if_exists=if_exists,
+            index=False,
+            dtype=dtype
+        )
+        print(f"✅ 数据成功导入表：{table_name}，模式：{if_exists}")
+    except Exception as e:
+        print(f"❌ 数据导入表 {table_name} 失败: {e}")
+        raise
 
 def get_dtype_for_cpc_hourly(df):
     dtype_mapping = {

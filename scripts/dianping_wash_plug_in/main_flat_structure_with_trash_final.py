@@ -82,7 +82,8 @@ def process_operation_folder():
         fp = os.path.join(OPERATION_FOLDER, fname)
         df = clean_operation_data(clean_and_load_excel(fp))
         df = drop_percentage_columns(df)
-        df = clean_numeric_columns(df)
+        # 清洗数值列，遇到异常项会打印出美团门店ID
+        df = clean_numeric_columns(df, key_col='美团门店ID')
         dfs.append(df)
         filepaths.append(fp)
 
@@ -135,7 +136,8 @@ def process_cpc_folder():
         df = process_cpc_dates(df, fname)
         df = match_store_id_for_single_cpc(df, store_mapping)
         df = drop_percentage_columns(df)
-        df = clean_numeric_columns(df)
+        # 清洗数值列，遇到异常项会打印出门店名称
+        df = clean_numeric_columns(df, key_col='门店名称')
         df = add_datetime_column(df)
         dfs.append(df)
         filepaths.append(fp)

@@ -1,3 +1,4 @@
+import asyncio
 import shutil
 import time
 from pathlib import Path
@@ -11,29 +12,44 @@ from bizguide_utils import (
     download_with_generation, cleanup_page, try_close_popup, click_reset_if_exists
 )
 import threading
-
+import yaml, getpass
+import json
 
 # 全局控制变量
 PAUSED = False
 
 threading.Thread(target=pause_listener, daemon=True).start()
 
+def load_cfg() -> dict:
+    with open("settings.yaml", "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    user = getpass.getuser()
+    # 把 {{username}} 占位符替换成实际用户名
+    for k, v in cfg.items():
+        if isinstance(v, str):
+            cfg[k] = v.replace("{{username}}", user)
+    return cfg
+
 # —— 配置 ——
-SRC         = Path(r"C:\Users\豆豆\AppData\Local\Google\Chrome\User Data")
-CLONE       = Path(r"D:\chrome_playwright_clone")
+CFG = load_cfg()
+SRC          = Path(CFG["chrome_user_data"]).expanduser().resolve()
+CLONE        = Path(CFG["clone_dir"]).expanduser().resolve()
+
+
 # 执行列表由映射动态生成
 PROFILES    = list(PROFILE_BRAND_MAP.keys())
 EXPORT_URL  = (
     "https://ecom.meituan.com/bizguide/portal?cate=100057652"
     "#https://ecom.meituan.com/bizguide/export"
 )
-DOWNLOAD_DIR = Path(r"D:\dianping_downloads")
+DOWNLOAD_DIR = Path(CFG["download_dir"]).expanduser().resolve()
 CPC_DIR             = DOWNLOAD_DIR / "cpc_hourly_data"
 OPERATION_DIR       = DOWNLOAD_DIR / "operation_data"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 # 创建目录（如果不存在）
 for d in (CPC_DIR, OPERATION_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
 
 def clone_user_data():
     CLONE.mkdir(parents=True, exist_ok=True)

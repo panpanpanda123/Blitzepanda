@@ -8,10 +8,11 @@ def force_select_all_checkboxes(frame: Locator) -> None:
     """
     使用 JS 脚本遍历页面上所有未勾选的复选框并点击，强制全选。
     """
+    # 直接在 frame 上 evaluate
     frame.evaluate(
         """() => {
             document
-              .querySelectorAll('input[type="checkbox"]')
+              .querySelectorAll('input[type=\"checkbox\"]')
               .forEach(cb => { if (!cb.checked) cb.click(); });
         }"""
     )
@@ -160,6 +161,7 @@ def select_all_metrics(frame: Locator) -> None:
     select_all_by_module(frame, skip_last=0)
     # 再文本级全选补漏
     select_all_by_text(frame)
+    # 已去除JS兜底，避免报错
 
 def click_dimension_expand(frame: Locator) -> None:
     """

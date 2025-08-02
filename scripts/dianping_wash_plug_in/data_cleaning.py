@@ -1,6 +1,7 @@
 # data_cleaning.py（修正版）
 import pandas as pd
 import re
+import numpy as np
 
 def clean_operation_data(df):
     # 去除字符串型数据两端的空格
@@ -16,10 +17,58 @@ def drop_percentage_columns(df):
     percent_columns = [col for col in df.columns if df[col].astype(str).str.contains('%').any()]
     return df.drop(columns=percent_columns)
 
-def clean_numeric_columns(df):
-    for col in df.columns[1:]:
-        if df[col].dtype == 'object':
-            df[col] = df[col].str.replace(',', '').astype(float, errors='ignore')
+import pandas as pd
+import numpy as np
+
+def clean_numeric_columns(df: pd.DataFrame, key_col: str = None) -> pd.DataFrame:
+    """
+    只对真正的数值指标列做清洗：
+      – 精确等于 '/' 的单元格记为异常，并设为 0
+      – 其它能转成数字的字符串转为 float
+      – 无法转成数字的非指标列保持原值
+    key_col: 指定门店名称或门店ID列，用于打印出哪个品牌出问题
+    """
+    bad_set = set()
+    # 跳过“非指标列”，按表头实际名称调整
+    skip = {
+        '日期', '时段', '推广门店', '推广名称',
+        '门店名称', '门店ID', '美团门店ID', '平台', '城市', '门店所在城市'
+    }
+
+    for col in df.columns:
+        # 仅处理 object 类型、且不在 skip 列表里的那些列
+        if df[col].dtype != 'object' or col in skip:
+            continue
+
+        # 去掉千分位逗号和两端空白
+        s = df[col].astype(str).str.replace(',', '', regex=False).str.strip()
+        cleaned = []
+
+        for idx, raw in enumerate(s):
+            if raw == '/':
+                # 碰到纯 "/"，记录品牌和列后设为 NaN
+                brand = df.at[idx, key_col] if key_col and key_col in df.columns else None
+                bad_set.add((brand, col))
+                num = np.nan
+            else:
+                # 其它先尝试转 float，失败则保留原字符串
+                try:
+                    num = float(raw)
+                except:
+                    num = raw
+            cleaned.append(num)
+
+        # 回写：把 NaN（即那些 "/"）逻辑替换成 0，其它字符串保留
+        df[col] = pd.Series(cleaned, index=df.index).replace({np.nan: 0})
+
+    # 汇总打印：每个品牌+列 只报一次
+    if bad_set:
+        print("⚠️ 以下品牌/列在某些行出现“/”，已设为 0，请人工核对：")
+        for brand, col in sorted(bad_set, key=lambda x: (str(x[0]), x[1])):
+            if brand:
+                print(f"  • 品牌 “{brand}” 的列 “{col}”")
+            else:
+                print(f"  • 列 “{col}”")
     return df
 
 def match_store_id_for_single_cpc(df, store_mapping):

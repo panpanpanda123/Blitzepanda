@@ -1,7 +1,7 @@
 import re
 import time
 from pathlib import Path
-from playwright.sync_api import Page, TimeoutError
+from playwright.sync_api import Page, TimeoutError, Locator
 from profile_brand_map import PROFILE_BRAND_MAP
 import keyboard
 
@@ -31,8 +31,8 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
         # 注意：一定要在 iframe 里找
         btn = ad_iframe.get_by_text(btn_text, exact=True)
         # 先滚动到可见，再等待可见
-        btn.scroll_into_view_if_needed(timeout=5000)
-        btn.wait_for(state="visible", timeout=5000)
+        btn.scroll_into_view_if_needed(timeout=5500)
+        btn.wait_for(state="visible", timeout=5500)
         wait_if_paused()
         try:
             btn.click(force=True)
@@ -54,7 +54,7 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
     # 3. 点击“数据报告”→“推广分析”
     wait_if_paused()
     cpc_frame.get_by_text("数据报告", exact=True).click()
-    time.sleep(1)
+    time.sleep(1.5)
     cpc_frame.get_by_text("推广分析", exact=True).click()
     time.sleep(0.5)
 
@@ -69,10 +69,9 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
         has_text=re.compile(r"^点评$")).click()  # :contentReference[oaicite:1]{index=1}
     time.sleep(0.2)
 
-    # —— 5. 选择自定义日期并点击具体日期 ——
+    # —— 5. 选择自定义日期并点击具体日期
     print(f"📅 选择自定义日期：{start_date} ~ {end_date}")
     wait_if_paused()
-    # 打开下拉，只点第一个“开始日期”输入框
     date_container = cpc_frame.locator("div").filter(has_text=re.compile(r"自定义"))
     date_input = date_container.get_by_placeholder("开始日期").first
     date_input.click()
@@ -82,83 +81,37 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
     sd = start_date.split("-")[2].lstrip("0")
     ed = end_date.split("-")[2].lstrip("0")
 
-    # 日历最外层 panel
-    calendar_panel = cpc_frame.locator(".merchant-date-picker-panel-calendar-month").first
+    # 拿到所有月面板
+    panels = cpc_frame.locator("div.merchant-date-picker-panel-calendar-month")
+    start_label = f"{int(start_date.split('-')[1])}月"
+    end_label   = f"{int(end_date.split('-')[1])}月"
+    start_panel = panels.filter(has_text=start_label).first
+    end_panel   = panels.filter(has_text=end_label).first
 
-    # 封装一个通用的点击尝试函数
-    def try_click(el):
-        wait_if_paused()
-        try:
-            el.click()
-            return True
-        except:
-            try:
-                el.evaluate("el => el.click()")
-                return True
-            except:
-                return False
+    # 点击起始日
+    start_panel \
+      .locator(
+        "div.merchant-date-picker-panel-calendar-month__date--current-month"
+        ":not(.merchant-date-picker-panel-calendar-month__date--disabled)"
+      ) \
+      .locator("div.merchant-date-picker-panel-calendar-month__date-date", has_text=sd) \
+      .first.click()
+    time.sleep(0.2)
 
-    # —— 点击开始日 ——
-    print(f"🔍 尝试点击开始日：{sd}")
-    wait_if_paused()
-    clicked = False
+    # 点击结束日
+    end_panel \
+      .locator(
+        "div.merchant-date-picker-panel-calendar-month__date--current-month"
+        ":not(.merchant-date-picker-panel-calendar-month__date--disabled)"
+      ) \
+      .locator("div.merchant-date-picker-panel-calendar-month__date-date", has_text=ed) \
+      .first.click()
+    time.sleep(0.2)
 
-    # 方法1：div.date-date 文本匹配
-    btns1 = calendar_panel.locator("div.date-date", has_text=sd)
-    if btns1.count() > 0:
-        clicked = try_click(btns1.first)
-
-    # 方法2：直接 inner frame get_by_text
-    if not clicked:
-        try:
-            btn2 = cpc_frame.get_by_text(sd, exact=True).first
-            clicked = try_click(btn2)
-        except:
-            clicked = False
-
-    # 方法3：XPath 兜底
-    if not clicked:
-        try:
-            btn3 = cpc_frame.locator(f"//td[contains(@class,'day') and text()='{sd}']").first
-            clicked = try_click(btn3)
-        except:
-            clicked = False
-
-    if not clicked:
-        raise RuntimeError(f"❌ 点击开始日失败：{sd}")
-    time.sleep(0.3)
-
-    # —— 点击结束日（如果结束日 != 开始日） ——
-    if sd != ed:
-        print(f"🔍 尝试点击结束日：{ed}")
-        clicked = False
-
-        # 重复三种方法
-        btns1 = calendar_panel.locator("div.date-date", has_text=ed)
-        if btns1.count() > 0:
-            clicked = try_click(btns1.first)
-
-        if not clicked:
-            try:
-                btn2 = cpc_frame.get_by_text(ed, exact=True).first
-                clicked = try_click(btn2)
-            except:
-                clicked = False
-
-        if not clicked:
-            try:
-                btn3 = cpc_frame.locator(f"//td[contains(@class,'day') and text()='{ed}']").first
-                clicked = try_click(btn3)
-            except:
-                clicked = False
-
-        if not clicked:
-            raise RuntimeError(f"❌ 点击结束日失败：{ed}")
-        time.sleep(0.3)
-
-    # 确认日期
-    cpc_frame.get_by_role("button", name="确定").click()
+    # 确认／应用
+    cpc_frame.get_by_role("button", name="确定", exact=True).click()
     time.sleep(1)
+
 
     # 6. 如果当前是“分天”模式，则切换到“分小时”
     try:

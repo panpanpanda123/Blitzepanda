@@ -7,7 +7,10 @@ import os, re, unicodedata, json
 import pandas as pd
 from rapidfuzz import process, fuzz
 from sqlalchemy import types as sqltypes
-from database_importer import import_to_mysql  # 如果只清洗就不需要，可保留
+try:
+    from .database_importer import import_to_mysql  # 包内相对导入，防止找不到
+except ImportError:
+    from database_importer import import_to_mysql  # 兼容直接脚本运行
 
 # ---------- MySQL 字段类型（供外部脚本可选复用） ----------
 dtype_review = {
