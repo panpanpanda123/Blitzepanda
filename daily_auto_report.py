@@ -9,6 +9,7 @@ from config_and_brand import engine, API_KEY, MODEL, brand_profile
 from AI_prompt import call_kimi_api, safe_dumps
 from summarize import summarize
 from cpc_analysis import compute_cpc_contribution_ratios
+from sqlalchemy import text
 import matplotlib.pyplot as plt
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -61,8 +62,6 @@ def generate_weekly_comparison_table(brand, report_date):
     if not mids:
         print(f"⚠️ 品牌 {brand} 无对应美团门店ID，跳过")
         return
-    mids_sql = ",".join(f"'{m}'" for m in mids)
-
     # 2) Determine current and last-week dates
     wd = report_date.weekday()  # 0=Mon, ...,6=Sun
     if wd == 0:
@@ -78,20 +77,27 @@ def generate_weekly_comparison_table(brand, report_date):
 
     # 3) Load data
     cols = ", ".join(f"`{m}`" for m in metrics)
-    cd_sql = ",".join(f"'{d}'" for d in current_dates)
-    pd_sql = ",".join(f"'{d}'" for d in prev_dates)
-    df_curr = pd.read_sql(
+    mid_placeholders = ", ".join(f":mid{i}" for i in range(len(mids)))
+    cd_placeholders = ", ".join(f":cd{i}" for i in range(len(current_dates)))
+    pd_placeholders = ", ".join(f":pd{i}" for i in range(len(prev_dates)))
+
+    params_curr = {f"mid{i}": m for i, m in enumerate(mids)}
+    params_curr.update({f"cd{i}": d for i, d in enumerate(current_dates)})
+    query_curr = text(
         f"SELECT `日期`, {cols} FROM `operation_data` "
-        f"WHERE `美团门店ID` IN ({mids_sql}) AND `日期` IN ({cd_sql}) "
-        f"ORDER BY `日期`",
-        engine
-    ).set_index('日期')
-    df_prev = pd.read_sql(
+        f"WHERE `美团门店ID` IN ({mid_placeholders}) AND `日期` IN ({cd_placeholders}) "
+        f"ORDER BY `日期`"
+    )
+    df_curr = pd.read_sql(query_curr, engine, params=params_curr).set_index('日期')
+
+    params_prev = {f"mid{i}": m for i, m in enumerate(mids)}
+    params_prev.update({f"pd{i}": d for i, d in enumerate(prev_dates)})
+    query_prev = text(
         f"SELECT `日期`, {cols} FROM `operation_data` "
-        f"WHERE `美团门店ID` IN ({mids_sql}) AND `日期` IN ({pd_sql}) "
-        f"ORDER BY `日期`",
-        engine
-    ).set_index('日期')
+        f"WHERE `美团门店ID` IN ({mid_placeholders}) AND `日期` IN ({pd_placeholders}) "
+        f"ORDER BY `日期`"
+    )
+    df_prev = pd.read_sql(query_prev, engine, params=params_prev).set_index('日期')
     df_prev = df_prev.add_prefix('上周_')
     df_curr = df_curr.add_prefix('本周_')
 
@@ -112,8 +118,8 @@ def plot_vertical_table(brand, report_date, engine):
 
     # 1) 取最近 7 天数据，SQL 里把所有指标都拉出来
     start = report_date - timedelta(days=6)
-    df = pd.read_sql(f"""
-        SELECT 
+    query = text("""
+        SELECT
             `日期`,
             `消费金额` AS `消费金额`,
             `曝光人数`,
@@ -127,13 +133,19 @@ def plot_vertical_table(brand, report_date, engine):
             `点评星级`    AS `星级`
         FROM `operation_data`
         WHERE `美团门店ID` IN (
-            SELECT `美团门店ID` 
-              FROM `store_mapping` 
-             WHERE `推广门店` = '{brand}'
+            SELECT `美团门店ID`
+              FROM `store_mapping`
+             WHERE `推广门店` = :brand
         )
-          AND `日期` BETWEEN '{start.date()}' AND '{report_date.date()}'
+          AND `日期` BETWEEN :start AND :end
         ORDER BY `日期`
-    """, engine)
+    """)
+    params = {
+        "brand": brand,
+        "start": start.date(),
+        "end": report_date.date(),
+    }
+    df = pd.read_sql(query, engine, params=params)
     if df.empty:
         print(f"⚠️ {brand} 最近7天无数据，跳过")
         return
@@ -224,8 +236,6 @@ def plot_comparison_table(brand, report_date):
     if not mids:
         print(f"⚠️ 品牌 {brand} 无对应美团门店ID，跳过对比表")
         return
-    mids_sql = ",".join(f"'{m}'" for m in mids)
-
     # 2) 计算“本期”“上期”日期
     wd = report_date.weekday()  # 0=周一 … 6=周日
     if wd == 0:
@@ -247,20 +257,26 @@ def plot_comparison_table(brand, report_date):
         "新好评数","新中差评数","打卡人数","扫码人数","新增收藏人数","点评星级"
     ]
     cols = ", ".join(f"`{m}`" for m in metrics)
-    cd_sql = ", ".join(f"'{d}'" for d in current_dates)
-    pd_sql = ", ".join(f"'{d}'" for d in prev_dates)
 
-    df_curr = pd.read_sql(
-        f"SELECT `日期`, {cols} FROM `operation_data` "
-        f"WHERE `美团门店ID` IN ({mids_sql}) AND `日期` IN ({cd_sql})",
-        engine
-    ).set_index("日期")
+    mid_ph = ", ".join(f":mid{i}" for i in range(len(mids)))
+    cd_ph = ", ".join(f":cd{i}" for i in range(len(current_dates)))
+    pd_ph = ", ".join(f":pd{i}" for i in range(len(prev_dates)))
 
-    df_prev = pd.read_sql(
+    params_curr = {f"mid{i}": m for i, m in enumerate(mids)}
+    params_curr.update({f"cd{i}": d for i, d in enumerate(current_dates)})
+    query_curr = text(
         f"SELECT `日期`, {cols} FROM `operation_data` "
-        f"WHERE `美团门店ID` IN ({mids_sql}) AND `日期` IN ({pd_sql})",
-        engine
-    ).set_index("日期")
+        f"WHERE `美团门店ID` IN ({mid_ph}) AND `日期` IN ({cd_ph})"
+    )
+    df_curr = pd.read_sql(query_curr, engine, params=params_curr).set_index("日期")
+
+    params_prev = {f"mid{i}": m for i, m in enumerate(mids)}
+    params_prev.update({f"pd{i}": d for i, d in enumerate(prev_dates)})
+    query_prev = text(
+        f"SELECT `日期`, {cols} FROM `operation_data` "
+        f"WHERE `美团门店ID` IN ({mid_ph}) AND `日期` IN ({pd_ph})"
+    )
+    df_prev = pd.read_sql(query_prev, engine, params=params_prev).set_index("日期")
 
     # 4) 汇总并构造对比表
     if df_curr.empty or df_prev.empty:
@@ -332,54 +348,65 @@ def main():
 
     # ---------- 一次性拉取所有数据 ----------
     print("➡️ 拉取昨日运营数据")
-    op_today = pd.read_sql(
-        f"""SELECT 
+    query_today = text(
+        """SELECT
                `美团门店ID`,`曝光人数`,`访问人数`,`购买人数`,
                `消费金额`,`新好评数`,`新中差评数`,
                `打卡人数`,`扫码人数`,`点评星级`,`新增收藏人数`,`rankings_detail`
            FROM `operation_data`
-           WHERE `日期` = '{report_date.date()}'""",
-        engine
-    ).merge(
+           WHERE `日期` = :dt"""
+    )
+    op_today = pd.read_sql(query_today, engine, params={"dt": report_date.date()}).merge(
         store_map[['美团门店ID','brand_name','operator']],
         on='美团门店ID', how='left'
     ).rename(columns={'brand_name':'推广门店'})
 
     print("➡️ 拉取近7天运营数据")
-    op_last7 = pd.read_sql(
-        f"""SELECT
+    query_last7 = text(
+        """SELECT
                `美团门店ID`,`日期`,`曝光人数`,`访问人数`,`购买人数`,
                `消费金额`,`新好评数`,`新中差评数`,
                `打卡人数`,`扫码人数`,`点评星级`,`新增收藏人数`
            FROM `operation_data`
-           WHERE `日期` BETWEEN '{last_7_start.date()}' AND '{report_date.date()}'""",
-        engine
+           WHERE `日期` BETWEEN :start AND :end"""
+    )
+    op_last7 = pd.read_sql(
+        query_last7,
+        engine,
+        params={"start": last_7_start.date(), "end": report_date.date()}
     ).merge(
         store_map[['美团门店ID','brand_name','operator']],
         on='美团门店ID', how='left'
     ).rename(columns={'brand_name':'推广门店'})
 
     print("➡️ 拉取昨日CPC数据")
-    cpc_today = pd.read_sql(
-        f"""SELECT `store_id`,`cost`,`impressions`,`clicks`,`orders`
+    query_cpc_today = text(
+        """SELECT `store_id`,`cost`,`impressions`,`clicks`,`orders`
            FROM `cpc_hourly_data`
-           WHERE `date` = '{report_date.date()}'""",
-        engine
-    ).merge(
+           WHERE `date` = :dt"""
+    )
+    cpc_today = pd.read_sql(query_cpc_today, engine, params={"dt": report_date.date()}).merge(
         store_map[['store_id','brand_name','operator']],
         on='store_id', how='left'
     ).rename(columns={'brand_name':'推广门店'})
 
     # ---------- 加载最近 14 天历史数据（用于环比 & 表格） ----------
     print("➡️ 拉取最近14天运营数据")
-    op_hist = pd.read_sql(
-        f"""SELECT 
+    query_hist = text(
+        """SELECT
                `美团门店ID`,`日期`,`曝光人数`,`访问人数`,`购买人数`,
                `消费金额`,`新好评数`,`新中差评数`,
                `打卡人数`,`扫码人数`,`点评星级`,`新增收藏人数`
            FROM `operation_data`
-           WHERE `日期` BETWEEN '{(report_date - timedelta(days=14)).date()}' AND '{report_date.date()}'""",
-        engine
+           WHERE `日期` BETWEEN :start AND :end"""
+    )
+    op_hist = pd.read_sql(
+        query_hist,
+        engine,
+        params={
+            "start": (report_date - timedelta(days=14)).date(),
+            "end": report_date.date(),
+        },
     ).merge(
         store_map[['美团门店ID','brand_name','operator']],
         on='美团门店ID', how='left'
@@ -421,28 +448,38 @@ def main():
 
     # —— 一次性拉当月全量数据 & 衍生列（循环外） ——
     month_start = report_date.replace(day=1).date()
-    df_month = pd.read_sql(
-        f"""
+    query_month = text(
+        """
         SELECT
           `美团门店ID`,`日期`,`消费金额`,`曝光人数`,`访问人数`,`购买人数`,
           `扫码人数`,`新增收藏人数`,`打卡人数`,`新好评数`,`新中差评数`,`点评星级`
         FROM `operation_data`
-        WHERE `日期` BETWEEN '{month_start}' AND '{report_date.date()}'
-        """, engine
+        WHERE `日期` BETWEEN :start AND :end
+        """
+    )
+    df_month = pd.read_sql(
+        query_month,
+        engine,
+        params={"start": month_start, "end": report_date.date()},
     ).merge(
         store_map[['美团门店ID','brand_name','operator','store_id']],
         on='美团门店ID', how='left'
     )
 
     # —— 拉当月每日CPC成本，并按品牌汇总，改列名为“推广通花费” ——
-    cpc_month = pd.read_sql(
-        f"""
-        SELECT 
+    query_cpc_month = text(
+        """
+        SELECT
           store_id, `date` AS 日期, SUM(cost) AS 推广通花费
         FROM cpc_hourly_data
-        WHERE `date` BETWEEN '{month_start}' AND '{report_date.date()}'
+        WHERE `date` BETWEEN :start AND :end
         GROUP BY store_id, `date`
-        """, engine
+        """
+    )
+    cpc_month = pd.read_sql(
+        query_cpc_month,
+        engine,
+        params={"start": month_start, "end": report_date.date()},
     ).merge(
         store_map[['store_id','brand_name','operator']],
         on='store_id', how='left'
@@ -547,8 +584,7 @@ def main():
         # 3) 计算与 7 天均值环比（可留存但不在最终输出中）
         op7_sum = summarize(df_op7, op_fields)
         cmp7 = {
-            k: f"{round((op_sum.get(k,0) - op7_sum.get(k,0)) /
-                        (op7_sum.get(k,1) or 1) * 100, 1)}%"
+            k: f"{round((op_sum.get(k,0) - op7_sum.get(k,0)) / (op7_sum.get(k,1) or 1) * 100, 1)}%"
             if op7_sum.get(k) else "N/A"
             for k in op_fields
         }
