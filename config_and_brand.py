@@ -1,16 +1,23 @@
 # ✅ 模块1：数据库连接与品牌画像配置
 
+import os
 from sqlalchemy import create_engine
 
-# 数据库连接字符串
-DB_CONNECTION_STRING = 'mysql+pymysql://root:xpxx1688@localhost:3306/dianping'
+# 数据库连接字符串从环境变量读取
+DB_CONNECTION_STRING = os.environ.get("DB_CONNECTION_STRING")
+if not DB_CONNECTION_STRING:
+    raise EnvironmentError(
+        "Environment variable DB_CONNECTION_STRING is required"
+    )
 engine = create_engine(DB_CONNECTION_STRING)
 
 HORLY_CPC_TABLE_NAME = 'cpc_hourly_data'
 
 # 大模型 API 配置
 API_URL = 'https://api.moonshot.cn/v1/chat/completions'
-API_KEY = 'sk-6BEaBQDqxNRofpO8PjNgbFFzppxZH1u8NIVGg84zmkVZWq1D'
+API_KEY = os.environ.get("API_KEY")
+if not API_KEY:
+    raise EnvironmentError("Environment variable API_KEY is required")
 MODEL = 'kimi-latest'
 
 # 品牌画像（可继续添加其他品牌）
