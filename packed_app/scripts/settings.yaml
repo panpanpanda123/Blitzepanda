@@ -1,8 +1,0 @@
-# settings.yaml
-# 用途：配置 Chrome 用户数据路径与用于复制的工作目录（免扫码登录）。
-# 说明：支持使用 {{username}} 占位符自动替换为当前登录系统的用户名。
-
-chrome_user_data: "C:\\Users\\{{username}}\\AppData\\Local\\Google\\Chrome\\User Data"
-clone_dir: "D:\\chrome_playwright_clone"
-
-
