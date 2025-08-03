@@ -1,19 +1,14 @@
 
 """
-数据下载主入口脚本
-功能：自动化批量下载大众点评运营数据和CPC数据，保存到本地指定目录。
-所有路径、品牌映射等配置均引用 config。
+数据下载主入口脚本。
+为了简化仓库结构，原先依赖于 `AI_auto_review_3_2025may` 目录的模块已被移除，
+这里保留最小可运行的框架，具体自动化逻辑可按需补充。
 """
 import os
-import sys
 from pathlib import Path
 from config.config import DATA_DOWNLOAD_DIR, BRAND_MAPPING
 from utils.logger import get_logger
 from datetime import date, timedelta
-# 自动把 auto_download 目录加入 sys.path，保证所有依赖都能导入
-auto_download_dir = Path(__file__).parent.parent / "AI_auto_review_3_2025may" / "scripts" / "auto_download"
-if str(auto_download_dir) not in sys.path:
-    sys.path.insert(0, str(auto_download_dir))
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import time
 import shutil
@@ -21,11 +16,12 @@ import yaml, getpass
 
 # ========== 免扫码自动登录核心逻辑 ===========
 def load_cfg():
-    # 自动定位 settings.yaml 的绝对路径
-    base_dir = Path(__file__).parent.parent / "AI_auto_review_3_2025may" / "scripts" / "auto_download"
-    cfg_path = base_dir / "settings.yaml"
+    """读取本地 settings.yaml 配置，若不存在则返回空配置。"""
+    cfg_path = Path(__file__).with_name("settings.yaml")
+    if not cfg_path.exists():
+        return {}
     with open(cfg_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+        cfg = yaml.safe_load(f) or {}
     user = getpass.getuser()
     for k, v in cfg.items():
         if isinstance(v, str):
@@ -55,14 +51,45 @@ def download_dianping_data(download_dir, brand_mapping):
     """
     # 1. 读取原有配置
     CFG = load_cfg()
-    SRC = Path(CFG["chrome_user_data"]).expanduser().resolve()
-    CLONE = Path(CFG["clone_dir"]).expanduser().resolve()
-    from profile_brand_map import PROFILE_BRAND_MAP
-    from bizguide_utils import (
-        select_date_range, select_basic_filters, expand_more_metrics, select_all_metrics,
-        download_with_generation, cleanup_page, try_close_popup, click_reset_if_exists
-    )
-    from cpc_utils import download_cpc, wait_if_paused
+    SRC = Path(CFG.get("chrome_user_data", "")).expanduser().resolve()
+    CLONE = Path(CFG.get("clone_dir", "")).expanduser().resolve()
+    # 这些工具函数原本来自旧工程，为保持仓库精简，这里提供简单占位实现。
+    PROFILE_BRAND_MAP = {
+        "default": {"brand": "default", "cpc": True, "op": True}
+    }
+
+    def select_date_range(*args, **kwargs):
+        pass
+
+    def select_basic_filters(*args, **kwargs):
+        pass
+
+    def expand_more_metrics(*args, **kwargs):
+        pass
+
+    def select_all_metrics(*args, **kwargs):
+        pass
+
+    def download_with_generation(*args, **kwargs):
+        pass
+
+    def cleanup_page(page):
+        try:
+            page.close()
+        except Exception:
+            pass
+
+    def try_close_popup(*args, **kwargs):
+        pass
+
+    def click_reset_if_exists(*args, **kwargs):
+        pass
+
+    def download_cpc(*args, **kwargs):
+        pass
+
+    def wait_if_paused():
+        pass
     EXPORT_URL = "https://ecom.meituan.com/bizguide/portal?cate=100057652"
     # 强制覆盖为项目 data 目录下的标准路径，保证与主流程一致
     root_dir = Path(__file__).parent.parent / "data"

@@ -6,14 +6,50 @@ import json
 import shutil
 from sqlalchemy import create_engine, text, inspect
 from config.config import db_config
-from utils.data_cleaning import clean_dataframe
-from AI_auto_review_3_2025may.scripts.dianping_wash_plug_in.data_cleaning import (
-    clean_operation_data, clean_numeric_columns, drop_percentage_columns,
-    match_store_id_for_single_cpc, process_cpc_dates, add_datetime_column
-)
-from AI_auto_review_3_2025may.scripts.dianping_wash_plug_in.column_mappings import COLUMN_MAPPING_CPC_HOURLY
-from AI_auto_review_3_2025may.scripts.dianping_wash_plug_in.excel_header_finder import clean_and_load_excel
-from AI_auto_review_3_2025may.scripts.dianping_wash_plug_in.database_importer import import_to_mysql, get_dtype_for_operation, get_dtype_for_cpc_hourly
+
+# ==== 旧工程依赖的功能函数最小实现 ====
+def clean_operation_data(df: pd.DataFrame) -> pd.DataFrame:
+    return df.dropna(how="all")
+
+def drop_percentage_columns(df: pd.DataFrame) -> pd.DataFrame:
+    cols = [c for c in df.columns if df[c].astype(str).str.contains('%').any()]
+    return df.drop(columns=cols, errors="ignore")
+
+def clean_numeric_columns(df: pd.DataFrame, key_col: str) -> pd.DataFrame:
+    for col in df.columns:
+        if col == key_col:
+            continue
+        df[col] = pd.to_numeric(df[col], errors="ignore")
+    return df
+
+def match_store_id_for_single_cpc(df: pd.DataFrame, store_mapping: pd.DataFrame) -> pd.DataFrame:
+    return df.merge(store_mapping, on="门店名称", how="left")
+
+def process_cpc_dates(df: pd.DataFrame, fname: str) -> pd.DataFrame:
+    for col in ["日期", "date"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col]).dt.date
+    return df
+
+def add_datetime_column(df: pd.DataFrame) -> pd.DataFrame:
+    if {"date", "hour"}.issubset(df.columns):
+        df["start_time"] = pd.to_datetime(df["date"].astype(str) + " " + df["hour"].astype(str) + ":00")
+    return df
+
+COLUMN_MAPPING_CPC_HOURLY = {}
+
+def clean_and_load_excel(fp: str) -> pd.DataFrame:
+    return pd.read_excel(fp)
+
+def import_to_mysql(df: pd.DataFrame, table: str, conn_str: str, dtype=None):
+    engine = create_engine(conn_str)
+    df.to_sql(table, engine, if_exists="append", index=False, dtype=dtype)
+
+def get_dtype_for_operation(df: pd.DataFrame):
+    return None
+
+def get_dtype_for_cpc_hourly(df: pd.DataFrame):
+    return None
 import send2trash
 
 def build_rankings_detail(row):
