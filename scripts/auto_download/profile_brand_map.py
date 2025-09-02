@@ -8,8 +8,6 @@ PROFILE_BRAND_MAP = {
     'Profile 45': {'brand': '杜九月',         'cpc': True, 'op': True},
     'Profile 49': {'brand': '木槿花',         'cpc': True, 'op': True},
     'Profile 50': {'brand': '韩味岛',         'cpc': True, 'op': True},
-    'Profile 55': {'brand': '小钱家',         'cpc': True, 'op': True},
     'Profile 59': {'brand': '青鹤谷',         'cpc': False, 'op': True},
     'Profile 60': {'brand': '朱桢',           'cpc': True, 'op': True},
-    'Profile 61': {'brand': '山有木兮南京东路',           'cpc': False, 'op': False},
 }

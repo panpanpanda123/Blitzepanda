@@ -31,8 +31,8 @@ def download_cpc(page: Page, download_dir: Path, start_date: str, end_date: str,
         # 注意：一定要在 iframe 里找
         btn = ad_iframe.get_by_text(btn_text, exact=True)
         # 先滚动到可见，再等待可见
-        btn.scroll_into_view_if_needed(timeout=5500)
-        btn.wait_for(state="visible", timeout=5500)
+        btn.scroll_into_view_if_needed(timeout=7500)
+        btn.wait_for(state="visible", timeout=7500)
         wait_if_paused()
         try:
             btn.click(force=True)

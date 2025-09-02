@@ -1,0 +1,4 @@
+# settings.yaml
+chrome_user_data: "C:\\Users\\{{username}}\\AppData\\Local\\Google\\Chrome\\User Data"
+clone_dir: "D:\\chrome_playwright_clone"
+download_dir: "D:\\dianping_downloads"
