@@ -1,30 +1,41 @@
 
 """
-数据下载主入口脚本
-功能：自动化批量下载大众点评运营数据和CPC数据，保存到本地指定目录。
-所有路径、品牌映射等配置均引用 config。
-"""
-import os
-import sys
-from pathlib import Path
-from config.config import DATA_DOWNLOAD_DIR, BRAND_MAPPING
-from utils.logger import get_logger
-from datetime import date, timedelta
-# 自动把 auto_download 目录加入 sys.path，保证所有依赖都能导入
-auto_download_dir = Path(__file__).parent.parent / "AI_auto_review_3_2025may" / "scripts" / "auto_download"
-if str(auto_download_dir) not in sys.path:
-    sys.path.insert(0, str(auto_download_dir))
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-import time
-import shutil
-import yaml, getpass
+数据下载主入口（精简版）
 
-# ========== 免扫码自动登录核心逻辑 ===========
-def load_cfg():
-    # 自动定位 settings.yaml 的绝对路径
-    base_dir = Path(__file__).parent.parent / "AI_auto_review_3_2025may" / "scripts" / "auto_download"
-    cfg_path = base_dir / "settings.yaml"
-    with open(cfg_path, "r", encoding="utf-8") as f:
+目标：不再引用 legacy 代码，采用本目录下的新模块执行“运营数据/CPC 数据”下载。
+流程：
+1) 读取本地 settings.yaml（位置可在此文件调整）以获得 Chrome 用户数据路径与工作克隆路径；
+2) 克隆所需 profiles 的浏览器数据；
+3) 逐个 profile 按配置执行 CPC 与/或运营数据下载；
+4) 下载目录统一落在项目 data 目录下。
+"""
+
+from pathlib import Path
+import sys
+from datetime import date, timedelta
+import getpass
+import yaml
+
+from config.config import DATA_DOWNLOAD_DIR
+from utils.logger import get_logger
+
+try:
+    # 确保可以以 "python scripts/download_data.py" 方式运行
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+except Exception:
+    pass
+
+from scripts.download_common import clone_user_data, open_chromium_context, close_all, DateRange
+from scripts.download_operation import download_operation
+from scripts.download_cpc import download_cpc
+from scripts.profiles import PROFILE_BRAND_MAP
+
+
+def load_settings(settings_path: Path) -> dict:
+    """读取 settings.yaml，并将 {{username}} 占位符替换为当前用户名。"""
+    with open(settings_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     user = getpass.getuser()
     for k, v in cfg.items():
@@ -32,156 +43,194 @@ def load_cfg():
             cfg[k] = v.replace("{{username}}", user)
     return cfg
 
-def clone_user_data(SRC, CLONE, profiles):
-    CLONE.mkdir(parents=True, exist_ok=True)
-    if not (CLONE / "Local State").exists():
-        shutil.copy(SRC / "Local State", CLONE / "Local State")
-        print("✅ 已复制 Local State")
-    for prof in profiles:
-        target = CLONE / prof
-        if not target.exists():
-            src_path = SRC / prof
-            if src_path.exists():
-                shutil.copytree(src_path, target)
-                print(f"📂 克隆成功：{prof}")
-            else:
-                print(f"⚠️ 警告：原始路径不存在 {src_path}，可能 profile 名写错")
-        else:
-            print(f"✅ 已存在 {prof}，跳过复制")
 
-def download_dianping_data(download_dir, brand_mapping):
-    """
-    免扫码自动登录+多 profile 自动下载点评数据
-    """
-    # 1. 读取原有配置
-    CFG = load_cfg()
-    SRC = Path(CFG["chrome_user_data"]).expanduser().resolve()
-    CLONE = Path(CFG["clone_dir"]).expanduser().resolve()
-    from profile_brand_map import PROFILE_BRAND_MAP
-    from bizguide_utils import (
-        select_date_range, select_basic_filters, expand_more_metrics, select_all_metrics,
-        download_with_generation, cleanup_page, try_close_popup, click_reset_if_exists
-    )
-    from cpc_utils import download_cpc, wait_if_paused
-    EXPORT_URL = "https://ecom.meituan.com/bizguide/portal?cate=100057652"
-    # 强制覆盖为项目 data 目录下的标准路径，保证与主流程一致
-    root_dir = Path(__file__).parent.parent / "data"
-    CPC_DIR = root_dir / "cpc_hourly_data"
-    OPERATION_DIR = root_dir / "operation_data"
-    CPC_DIR.mkdir(parents=True, exist_ok=True)
-    OPERATION_DIR.mkdir(parents=True, exist_ok=True)
-    PROFILES = list(PROFILE_BRAND_MAP.keys())
+def download_dianping_data(download_root: Path) -> None:
+    # 1) 读取设置
+    base_dir = Path(__file__).parent  # scripts 目录
+    settings_path = base_dir / "settings.yaml"
+    cfg = load_settings(settings_path)
+    src = Path(cfg["chrome_user_data"]).expanduser().resolve()
+    clone = Path(cfg["clone_dir"]).expanduser().resolve()
 
-    # 2. 克隆用户数据，确保所有 profile 可用
-    clone_user_data(SRC, CLONE, PROFILES)
+    # 2) 确保下载目录（兼容旧脚本：若传入的是 data/downloads，则回退到 data 根目录）
+    effective_root = download_root.parent if download_root.name.lower() == "downloads" else download_root
+    cpc_dir = (effective_root / "cpc_hourly_data"); cpc_dir.mkdir(parents=True, exist_ok=True)
+    op_dir = (effective_root / "operation_data"); op_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. 选择日期
-    today = date.today()
-    if today.weekday() == 0:
-        start = today - timedelta(days=3)
-        end = today - timedelta(days=1)
+    # 3) 克隆用户数据
+    profiles = list(PROFILE_BRAND_MAP.keys())
+    clone_user_data(src, clone, profiles)
+
+    # 4) 选择日期（默认昨天；周一默认跨周五~周日）
+    dr = DateRange.yesterday_or_weekend()
+    default = f"{dr.start.isoformat()},{dr.end.isoformat()}"
+    text = input(f"下载日期范围（YYYY-MM-DD,YYYY-MM-DD），回车默认[{default}]: ").strip()
+    if text:
+        s, e = map(str.strip, text.split(","))
     else:
-        start = today - timedelta(days=1)
-        end = start
-    default = f"{start.isoformat()},{end.isoformat()}"
-    text = input(f"下载日期范围（YYYY-MM-DD,YYYY-MM-DD），回车使用默认[{default}]: ").strip()
-    start_date, end_date = tuple(map(str.strip, text.split(","))) if text else (start.isoformat(), end.isoformat())
+        s, e = dr.to_str_pair()
 
-    # 4. 选择品牌
-    brand_input = input("👉 如需只下载部分品牌，请输入品牌名（多个用英文逗号隔开），回车则下载全部：").strip()
+    # 5) 可选品牌筛选
+    brand_input = input("👉 如需只下载部分品牌，请输入品牌名（多个用英文逗号隔开），回车下载全部：").strip()
     if brand_input:
-        selected_brands = set(b.strip() for b in brand_input.split(","))
-        selected_profiles = [
-            prof for prof, cfg in PROFILE_BRAND_MAP.items()
-            if cfg.get("brand") in selected_brands
-        ]
+        selected = set(b.strip() for b in brand_input.split(","))
+        selected_profiles = [p for p, conf in PROFILE_BRAND_MAP.items() if conf.get("brand") in selected]
         if not selected_profiles:
-            print("❌ 未匹配到任何品牌，请检查输入")
-            return
+            print("❌ 未匹配到任何品牌，请检查输入"); return
     else:
-        selected_profiles = PROFILES
+        selected_profiles = profiles
 
-    # 5. 自动化下载
-    with sync_playwright() as p:
-        for prof in selected_profiles:
-            ctx = p.chromium.launch_persistent_context(
-                user_data_dir=str(CLONE),
-                channel="chrome", headless=False,
-                args=[f"--profile-directory={prof}", "--disable-infobars"],
-                accept_downloads=True, downloads_path=str(download_dir)
-            )
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            cfg = PROFILE_BRAND_MAP.get(prof, {})
-            print(f"\n===== Running {prof} [{start_date} → {end_date}] =====")
-            # —— 1. CPC 数据（仅当 cpc=True 时执行）——
-            if cfg.get('cpc', False):
-                HOME_URL = (
-                    "https://ecom.meituan.com/meishi/?cate=5348"
-                    "#https://midas.dianping.com/shopdiy/account/pcCpcEntry"
-                    "?continueUrl=/app/peon-merchant-product-menu/html/index.html"
-                )
-                page.goto(HOME_URL, wait_until="networkidle")
-                wait_if_paused()
-                # 只在页面真的有iframe.loginFormContent时才处理弹窗，否则直接进入主流程
-                popup = False
-                try:
-                    if page.query_selector("iframe.loginFormContent"):
-                        popup = True
-                except Exception:
-                    popup = False
-                if popup:
-                    wait_if_paused()
-                    login_frame = page.frame_locator("iframe.loginFormContent")
-                    login_frame.locator('div.biz-item:has-text("我是餐饮商家")').click()
-                    login_frame.locator('button.button.active:has-text("确定")').click()
-                    page.wait_for_load_state("networkidle", timeout=5000)
-                    print("✅ 已关闭弹窗，继续下载 CPC")
-                wait_if_paused()
-                download_cpc(page, CPC_DIR, start_date, end_date, prof)
-            else:
-                print(f"ℹ️ {cfg.get('brand', prof)} 未投放推广通，跳过推广通页面与 CPC 下载")
-            # —— 2. 运营数据（仅当 op=True 时执行）——
-            wait_if_paused()
-            if cfg.get('op', True):
-                # 1. 跳转到报表页
-                page.goto(EXPORT_URL, wait_until="networkidle")
-                # 2. 点击“报表”tab，确保进入正确页面（如有必要可根据实际tab文本调整）
-                try:
-                    page.get_by_text('报表', exact=True).click()
-                    time.sleep(1.2)
-                except Exception:
-                    pass  # 如果没有报表tab则跳过
-                # 3. 切换到报表iframe
-                frame = page.frame_locator("iframe").first
-                # 4. 处理弹窗
-                try_close_popup(frame)
-                # 5. 检查并点击“点击重置”按钮
-                click_reset_if_exists(frame)
-                # 6. 选择日期
-                select_date_range(frame, start_date, end_date)
-                # 7. 选择基础过滤项
-                select_basic_filters(frame)
-                # 8. 展开更多指标
-                expand_more_metrics(frame)
-                # 9. 全选所有指标
-                select_all_metrics(frame)
-                # 10. 下载生成报表
-                download_with_generation(
-                    frame, page, OPERATION_DIR,
-                    start_date, end_date,
-                    cfg.get('brand', prof)
-                )
-                # 11. 关闭当前页面
-                cleanup_page(page)
-            else:
-                print(f"ℹ️ {cfg.get('brand', prof)} 未设置运营数据下载，跳过")
+    # 6) 逐 profile 下载
+    for prof in selected_profiles:
+        logger = get_logger("download_data")
+        logger.info(f"===== Running {prof} [{s} → {e}] =====")
+        p, ctx, page = open_chromium_context(clone, prof, download_root)
+        try:
+            conf = PROFILE_BRAND_MAP.get(prof, {})
+            brand = conf.get("brand", prof)
+            if conf.get("cpc", False):
+                download_cpc(page, cpc_dir, s, e, prof, brand)
+            if conf.get("op", True):
+                download_operation(page, op_dir, s, e, brand)
+        finally:
+            close_all(p, ctx)
+
+
+def download_dianping_data_gui(download_root: Path, start_date: str, end_date: str, selected_brands: list, wait_time: int = 3, resume_from: str = None, progress_callback=None) -> dict:
+    """GUI版本的下载函数，支持断点续传和进度回调"""
+    # 1) 读取设置
+    base_dir = Path(__file__).parent  # scripts 目录
+    settings_path = base_dir / "settings.yaml"
+    cfg = load_settings(settings_path)
+    src = Path(cfg["chrome_user_data"]).expanduser().resolve()
+    clone = Path(cfg["clone_dir"]).expanduser().resolve()
+
+    # 2) 确保下载目录（兼容旧脚本：若传入的是 data/downloads，则回退到 data 根目录）
+    effective_root = download_root.parent if download_root.name.lower() == "downloads" else download_root
+    cpc_dir = (effective_root / "cpc_hourly_data"); cpc_dir.mkdir(parents=True, exist_ok=True)
+    op_dir = (effective_root / "operation_data"); op_dir.mkdir(parents=True, exist_ok=True)
+
+    # 3) 克隆用户数据
+    profiles = list(PROFILE_BRAND_MAP.keys())
+    clone_user_data(src, clone, profiles)
+
+    # 4) 根据选中的品牌筛选profiles
+    if selected_brands:
+        # 将品牌名转换为profile列表
+        selected_profiles = []
+        for profile, conf in PROFILE_BRAND_MAP.items():
+            if conf.get("brand") in selected_brands:
+                selected_profiles.append(profile)
+        
+        if not selected_profiles:
+            raise ValueError(f"未找到对应的profile: {selected_brands}")
+    else:
+        selected_profiles = profiles
+
+    # 5) 断点续传逻辑
+    if resume_from:
+        # 找到断点位置
+        try:
+            resume_index = selected_profiles.index(resume_from)
+            logger = get_logger("download_data")
+            logger.info(f"🔄 断点续传：从 {resume_from} 开始继续下载")
+            selected_profiles = selected_profiles[resume_index:]
+        except ValueError:
+            logger = get_logger("download_data")
+            logger.warning(f"⚠️ 断点 {resume_from} 不在当前列表中，从头开始下载")
+    
+    # 6) 记录下载结果
+    download_results = {
+        'success': [],
+        'failed': [],
+        'current_progress': 0,
+        'total_count': len(selected_profiles),
+        'last_successful': None,
+        'last_failed': None
+    }
+    
+    # 7) 逐 profile 下载
+    for i, prof in enumerate(selected_profiles):
+        logger = get_logger("download_data")
+        current_progress = i + 1
+        download_results['current_progress'] = current_progress
+        
+        logger.info(f"===== Running {prof} [{start_date} → {end_date}] ({current_progress}/{len(selected_profiles)}) =====")
+        
+        try:
+            p, ctx, page = open_chromium_context(clone, prof, download_root)
+            try:
+                conf = PROFILE_BRAND_MAP.get(prof, {})
+                brand = conf.get("brand", prof)
+                
+                # 根据配置决定下载什么数据
+                if conf.get("cpc", False):
+                    logger.info(f"开始下载 {brand} 的CPC数据...")
+                    download_cpc(page, cpc_dir, start_date, end_date, prof, brand)
+                    logger.info(f"{brand} CPC数据下载完成")
+                    
+                    # 等待用户设置的等待时间
+                    if wait_time > 0:
+                        logger.info(f"等待 {wait_time} 秒...")
+                        import time
+                        time.sleep(wait_time)
+                
+                if conf.get("op", True):
+                    logger.info(f"开始下载 {brand} 的运营数据...")
+                    download_operation(page, op_dir, start_date, end_date, brand)
+                    logger.info(f"{brand} 运营数据下载完成")
+                    
+                    # 等待用户设置的等待时间
+                    if wait_time > 0:
+                        logger.info(f"等待 {wait_time} 秒...")
+                        import time
+                        time.sleep(wait_time)
+                
+                # 下载成功
+                download_results['success'].append(prof)
+                download_results['last_successful'] = prof
+                logger.info(f"✅ {brand} 下载完成 ({current_progress}/{len(selected_profiles)})")
+                
+                # 调用进度回调函数
+                if progress_callback:
+                    progress_callback(current_progress, len(selected_profiles), f"已完成 {brand}")
+                
+            finally:
+                close_all(p, ctx)
+                
+        except Exception as e:
+            # 下载失败
+            download_results['failed'].append(prof)
+            download_results['last_failed'] = prof
+            logger.error(f"❌ {prof} 下载失败: {str(e)}")
+            
+            # 返回当前状态，供GUI处理
+            return {
+                'status': 'failed',
+                'error': str(e),
+                'failed_at': prof,
+                'progress': download_results,
+                'resume_from': prof,  # 下次可以从这里继续
+                'completed_count': len(download_results['success']),
+                'total_count': len(selected_profiles)
+            }
+    
+    # 全部下载完成
+    logger.info("🎉 所有数据下载完成！")
+    return {
+        'status': 'success',
+        'progress': download_results,
+        'completed_count': len(selected_profiles),
+        'total_count': len(selected_profiles)
+    }
+
 
 def main():
     logger = get_logger('download_data')
     logger.info(f"数据将下载到: {DATA_DOWNLOAD_DIR}")
-    # 调用主下载逻辑
-    download_dianping_data(DATA_DOWNLOAD_DIR, BRAND_MAPPING)
+    download_dianping_data(Path(DATA_DOWNLOAD_DIR))
     logger.info("下载流程已完成")
+
 
 if __name__ == '__main__':
     main()

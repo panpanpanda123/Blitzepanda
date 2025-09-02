@@ -446,14 +446,17 @@ def generate_daily_report(report_date, output_dir):
             on='美团门店ID', how='left'
         ).rename(columns={'brand_name':'推广门店'})
 
-        # 拉取昨日CPC数据
-        logger.info("拉取昨日CPC数据")
-        cpc_today = pd.read_sql(
+        # 拉取报告日期当天的CPC数据（完全按照老代码逻辑）
+        logger.info("拉取CPC数据")
+        cpc_today_raw = pd.read_sql(
             f"""SELECT `store_id`,`cost`,`impressions`,`clicks`,`orders`
                FROM `cpc_hourly_data`
                WHERE `date` = '{report_date.date()}'""",
             engine
-        ).merge(
+        )
+        
+        # 合并门店映射
+        cpc_today = cpc_today_raw.merge(
             store_map[['store_id','brand_name','operator']],
             on='store_id', how='left'
         ).rename(columns={'brand_name':'推广门店'})
@@ -477,6 +480,27 @@ def generate_daily_report(report_date, output_dir):
         op_group = op_today.groupby("推广门店")
         op7_group = op_last7.groupby("推广门店")
         cpc_group = cpc_today.groupby("推广门店")
+
+        # ==================== 提前拉取推广通花费数据 ====================
+        # 拉取当月每日CPC成本，用于推广通花费分析和Excel生成
+        month_start = report_date.replace(day=1).date()
+        cpc_month = pd.read_sql(
+            f"""
+            SELECT 
+              store_id, `date` AS 日期, SUM(cost) AS 推广通花费
+            FROM cpc_hourly_data
+            WHERE `date` BETWEEN '{month_start}' AND '{report_date.date()}'
+            GROUP BY store_id, `date`
+            """, engine
+        ).merge(
+            store_map[['store_id','brand_name','operator']],
+            on='store_id', how='left'
+        )
+        
+        # 同一天同品牌可能存在多门店，按品牌+日期汇总
+        cpc_month = cpc_month.groupby(
+            ['brand_name','operator','日期'], as_index=False
+        )['推广通花费'].sum()
 
         # ==================== 图表生成调用（已注释） ====================
         # TODO: 用户要求暂时忽略图片功能，后续会大改
@@ -507,10 +531,23 @@ def generate_daily_report(report_date, output_dir):
 
             # 1) 汇总当日运营 & CPC 数据
             op_sum = summarize(df_op, op_fields)
-            if df_cpc.empty:
+            
+            # 直接从cpc_month获取报告日期的CPC数据（修复推广通花费错误）
+            brand_cpc_today = cpc_month[
+                (cpc_month['brand_name'] == brand) & 
+                (cpc_month['日期'] == report_date.date())
+            ]
+            
+            if brand_cpc_today.empty:
                 cpc_sum, ratios = {}, {}
             else:
-                cpc_sum = summarize(df_cpc, cpc_fields)
+                # 构造cpc_sum，直接从cpc_month获取
+                cpc_sum = {
+                    'cost': float(brand_cpc_today['推广通花费'].iloc[0]),
+                    'impressions': 0,  # 这些字段在cpc_month中没有，设为0
+                    'clicks': 0,
+                    'orders': 0
+                }
                 ratios = compute_cpc_contribution_ratios(op_sum, cpc_sum)
 
             # 2) 计算日环比（昨日 vs. 上周同期），周一特殊处理
@@ -634,10 +671,17 @@ def generate_daily_report(report_date, output_dir):
             # 构建报告文本
             suggestion = ("发现差评，运营师已介入跟进。" if bad_val > 0 else "数据正常，继续引导好评。")
             
-            # 推广通花费分析
+            # 推广通花费分析（完全按照老代码逻辑）
             cpc_part = ""
-            cost_today = cpc_sum.get("cost", 0) if not df_cpc.empty else 0
-            cost_prev = 0  # 这里可以扩展为获取上周同期CPC数据
+            cpc_cost = float(cpc_sum.get("cost", 0))
+            cost_today = round(cpc_cost, 2)
+            prev_date = report_date.date() - timedelta(days=1)
+            # 从 cpc_month DataFrame 找昨日成本
+            prev_row = cpc_month[
+                (cpc_month['brand_name']==brand) & (cpc_month['日期']==prev_date)
+            ]
+            cost_prev = float(prev_row['推广通花费'].iloc[0]) if len(prev_row) else 0.0
+            
             if not (cost_today == 0 and cost_prev == 0):
                 cpc_part = f"；推广通花费 {cost_today:.2f}"
                 # 判断推广通花费异常
@@ -697,24 +741,7 @@ def generate_daily_report(report_date, output_dir):
             on='美团门店ID', how='left'
         )
 
-        # 拉取当月每日CPC成本
-        cpc_month = pd.read_sql(
-            f"""
-            SELECT 
-              store_id, `date` AS 日期, SUM(cost) AS 推广通花费
-            FROM cpc_hourly_data
-            WHERE `date` BETWEEN '{month_start}' AND '{report_date.date()}'
-            GROUP BY store_id, `date`
-            """, engine
-        ).merge(
-            store_map[['store_id','brand_name','operator']],
-            on='store_id', how='left'
-        )
-        
-        # 同一天同品牌可能存在多门店，按品牌+日期汇总
-        cpc_month = cpc_month.groupby(
-            ['brand_name','operator','日期'], as_index=False
-        )['推广通花费'].sum()
+        # 使用之前已经拉取的cpc_month数据，无需重复查询
 
         # 把推广通花费合并回df_month，缺失时设为0
         df_month = df_month.merge(

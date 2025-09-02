@@ -28,4 +28,11 @@ BRAND_MAPPING = {
 # 其他全局参数
 REPORT_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'output')
 
+# Word 模板路径，指向项目根目录下 templates 文件夹中的模板
+WORD_TEMPLATE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    'templates',
+    'monthly_report_template.docx'
+)
+
 # 可根据实际情况补充其他配置
