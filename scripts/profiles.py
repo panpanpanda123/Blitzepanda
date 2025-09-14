@@ -22,6 +22,7 @@ PROFILE_BRAND_MAP: Dict[str, Dict[str, Any]] = {
     'Profile 49': {'brand': '木槿花',         'cpc': True, 'op': True},
     'Profile 50': {'brand': '韩味岛',         'cpc': True, 'op': True},
     'Profile 60': {'brand': '朱桢',           'cpc': True, 'op': True},
+    'Profile 57': {'brand': '香啦啦',           'cpc': True, 'op': True},
 }
 
 
