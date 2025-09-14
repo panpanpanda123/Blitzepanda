@@ -1,0 +1,9 @@
+# build artifacts
+dist/
+build/
+packed_app/dist/
+packed_app/build/
+*.exe
+*.pkg
+__pycache__/
+*.pyc
