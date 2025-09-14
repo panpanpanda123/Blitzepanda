@@ -10,6 +10,13 @@
             </Attribute>
           </value>
         </entry>
+        <entry key="\packed_app\config\store_mapping.csv">
+          <value>
+            <Attribute>
+              <option name="separator" value="," />
+            </Attribute>
+          </value>
+        </entry>
       </map>
     </option>
   </component>
